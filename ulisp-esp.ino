@@ -64,7 +64,7 @@ Adafruit_SSD1306 tft(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire);
 #elif defined(ESP32)
   #define WORKSPACESIZE (8000-SDSIZE)     /* Cells (8*bytes) */
   #define EEPROMSIZE 4096                 /* Bytes available for EEPROM */
-  #define analogWrite(x,y) dacWrite((x),(y))
+//ESP32C3  #define analogWrite(x,y) dacWrite((x),(y))
   #define SDCARD_SS_PIN 13
   #define LED_BUILTIN 13
 
@@ -3425,7 +3425,7 @@ object *fn_analogreadresolution (object *args, object *env) {
   (void) env;
   object *arg = first(args);
   #if defined(ESP32)
-  analogReadResolution(checkinteger(ANALOGREADRESOLUTION, arg));
+//ESP32C3  analogReadResolution(checkinteger(ANALOGREADRESOLUTION, arg));
   #else
   error2(ANALOGREADRESOLUTION, PSTR("not supported"));
   #endif
@@ -3440,7 +3440,7 @@ object *fn_analogwrite (object *args, object *env) {
   else pin = checkinteger(ANALOGWRITE, arg);
   checkanalogwrite(pin);
   object *value = second(args);
-  analogWrite(pin, checkinteger(ANALOGWRITE, value));
+//ESP32C3  analogWrite(pin, checkinteger(ANALOGWRITE, value));
   return value;
 }
 
