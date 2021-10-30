@@ -61,10 +61,15 @@ Adafruit_SSD1306 tft(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire);
   #define SDCARD_SS_PIN 10
   #define LED_BUILTIN 13
 
+#elif defined(ARDUINO_ESP32C3_DEV)
+  #define WORKSPACESIZE (8000-SDSIZE)     /* Cells (8*bytes) */
+  #define EEPROMSIZE 4096                 /* Bytes available for EEPROM */
+  #define LED_BUILTIN 8
+
 #elif defined(ESP32)
   #define WORKSPACESIZE (8000-SDSIZE)     /* Cells (8*bytes) */
   #define EEPROMSIZE 4096                 /* Bytes available for EEPROM */
-//ESP32C3  #define analogWrite(x,y) dacWrite((x),(y))
+  #define analogWrite(x,y) dacWrite((x),(y))
   #define SDCARD_SS_PIN 13
   #define LED_BUILTIN 13
 
@@ -3424,8 +3429,10 @@ object *fn_analogread (object *args, object *env) {
 object *fn_analogreadresolution (object *args, object *env) {
   (void) env;
   object *arg = first(args);
-  #if defined(ESP32)
-//ESP32C3  analogReadResolution(checkinteger(ANALOGREADRESOLUTION, arg));
+  #if defined(ARDUINO_ESP32C3_DEV)
+  error2(ANALOGREADRESOLUTION, PSTR("not supported"));
+  #elif defined(ESP32)
+  analogReadResolution(checkinteger(ANALOGREADRESOLUTION, arg));
   #else
   error2(ANALOGREADRESOLUTION, PSTR("not supported"));
   #endif
@@ -3436,11 +3443,15 @@ object *fn_analogwrite (object *args, object *env) {
   (void) env;
   int pin;
   object *arg = first(args);
+  object *value = second(args);
+  #if defined(ARDUINO_ESP32C3_DEV)
+  error2(ANALOGWRITE, PSTR("not supported"));
+  #else
   if (keywordp(arg)) pin = checkkeyword(NIL, arg);
   else pin = checkinteger(ANALOGWRITE, arg);
   checkanalogwrite(pin);
-  object *value = second(args);
-//ESP32C3  analogWrite(pin, checkinteger(ANALOGWRITE, value));
+  analogWrite(pin, checkinteger(ANALOGWRITE, value));
+  #endif
   return value;
 }
 
