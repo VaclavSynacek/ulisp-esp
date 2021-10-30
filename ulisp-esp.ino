@@ -4945,7 +4945,12 @@ int gserial () {
   return '\n';
 #else
   unsigned long start = millis();
-  while (!Serial.available()) if (millis() - start > 1000) clrflag(NOECHO);
+  while (!Serial.available()) {
+    #if defined(ARDUINO_ESP32C3_DEV) 
+    vTaskDelay(10); //otherwise watchdog is complaining about 100% cpu usage by loopTask
+    #endif
+    if (millis() - start > 1000) clrflag(NOECHO);
+  }
   char temp = Serial.read();
   if (temp != '\n' && !tstflag(NOECHO)) pserial(temp);
   return temp;
