@@ -15,6 +15,7 @@ const char LispLibrary[] PROGMEM = "";
 // #define sdcardsupport
 // #define gfxsupport
 // #define lisplibrary
+// #define assemblerlist
 // #define lineeditor
 // #define vt100
 
@@ -65,6 +66,8 @@ Adafruit_SSD1306 tft(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire);
   #define WORKSPACESIZE (8000-SDSIZE)     /* Cells (8*bytes) */
   #define EEPROMSIZE 4096                 /* Bytes available for EEPROM */
   #define LED_BUILTIN 8
+  #define CODESIZE 4096                    /* Bytes */
+  #define STACKDIFF 4096
 
 #elif defined(ESP32)
   #define WORKSPACESIZE (8000-SDSIZE)     /* Cells (8*bytes) */
@@ -115,6 +118,10 @@ Adafruit_SSD1306 tft(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire);
 #define PACKEDS            0x43238000
 #define BUILTINS           0xF4240000
 
+// Code marker stores start and end of code block
+#define startblock(x)      ((x->integer) & 0xFFFF)
+#define endblock(x)        ((x->integer) >> 16 & 0xFFFF)
+
 // Constants
 
 const int TRACEMAX = 3; // Number of traced functions
@@ -156,6 +163,7 @@ typedef struct sobject {
 
 typedef object *(*fn_ptr_type)(object *, object *);
 typedef void (*mapfun_t)(object *, object **);
+typedef int (*intfn_ptr_type)(int w, int x, int y, int z);
 
 typedef const struct {
   PGM_P string;
@@ -169,7 +177,7 @@ typedef void (*pfun_t)(char);
 enum builtin_t { NIL, TEE, NOTHING, OPTIONAL, INITIALELEMENT, ELEMENTTYPE, BIT, AMPREST, LAMBDA, LET,
 LETSTAR, CLOSURE, PSTAR, SPECIAL_FORMS, QUOTE, OR, DEFUN, DEFVAR, SETQ, LOOP, RETURN, PUSH, POP, INCF,
 DECF, SETF, DOLIST, DOTIMES, TRACE, UNTRACE, FORMILLIS, TIME, WITHOUTPUTTOSTRING, WITHSERIAL, WITHI2C,
-WITHSPI, WITHSDCARD, WITHGFX, WITHCLIENT, TAIL_FORMS, PROGN, IF, COND, WHEN, UNLESS, CASE, AND, FUNCTIONS,
+WITHSPI, WITHSDCARD, WITHGFX, WITHCLIENT, DEFCODE, TAIL_FORMS, PROGN, IF, COND, WHEN, UNLESS, CASE, AND, FUNCTIONS,
 NOT, NULLFN, CONS, ATOM, LISTP, CONSP, SYMBOLP, ARRAYP, BOUNDP, SETFN, STREAMP, EQ, CAR, FIRST, CDR, REST,
 CAAR, CADR, SECOND, CDAR, CDDR, CAAAR, CAADR, CADAR, CADDR, THIRD, CDAAR, CDADR, CDDAR, CDDDR, LENGTH,
 ARRAYDIMENSIONS, LIST, MAKEARRAY, REVERSE, NTH, AREF, ASSOC, MEMBER, APPLY, FUNCALL, APPEND, MAPC, MAPCAR,
@@ -196,6 +204,7 @@ USERFUNCTIONS, ENDFUNCTIONS, SET_SIZE = INT_MAX };
 // Global variables
 
 object Workspace[WORKSPACESIZE] WORDALIGNED;
+uint8_t MyCode[CODESIZE] WORDALIGNED;
 
 jmp_buf exception;
 unsigned int Freespace = 0;
@@ -345,6 +354,13 @@ object *symbol (symbol_t name) {
 
 inline object *bsymbol (builtin_t name) {
   return intern(twist(name+BUILTINS));
+}
+
+object *codehead (int entry) {
+  object *ptr = myalloc();
+  ptr->type = CODE;
+  ptr->integer = entry;
+  return ptr;
 }
 
 object *intern (symbol_t name) {
@@ -1566,6 +1582,83 @@ void supersub (object *form, int lm, int super, pfun_t pfun) {
   pfun(')'); return;
 }
 
+// Assembler
+
+object *call (int entry, int nargs, object *args, object *env) {
+  (void) env;
+  int param[4];
+  for (int i=0; i<nargs; i++) {
+    object *arg = first(args);
+    if (integerp(arg)) param[i] = arg->integer;
+    else param[i] = (uintptr_t)arg;
+    args = cdr(args);
+  }
+  asm("fence.i");
+  int w = ((intfn_ptr_type)&MyCode[entry])(param[0], param[1], param[2], param[3]);
+  return number(w);
+}
+
+void putcode (object *arg, int origin, int pc) {
+#if defined(CODESIZE)
+  int code = checkinteger(DEFCODE, arg);
+  MyCode[origin+pc] = code & 0xff;
+  MyCode[origin+pc+1] = (code>>8) & 0xff;
+  #if defined(assemblerlist)
+  printhex4(pc, pserial);
+  printhex4(code, pserial);
+  #endif
+#endif
+}
+
+int assemble (int pass, int origin, object *entries, object *env, object *pcpair) {
+  int pc = 0; cdr(pcpair) = number(pc);
+  while (entries != NULL) {
+    object *arg = first(entries);
+    if (symbolp(arg)) {
+      if (pass == 2) {
+        #if defined(assemblerlist)
+        printhex4(pc, pserial);
+        indent(5, ' ', pserial);
+        printobject(arg, pserial); pln(pserial);
+        #endif
+      } else {
+        object *pair = findvalue(arg, env);
+        cdr(pair) = number(pc);
+      }
+    } else {
+      object *argval = eval(arg, env);
+      if (listp(argval)) {
+        object *arglist = argval;
+        while (arglist != NULL) {
+          if (pass == 2) {
+            putcode(first(arglist), origin, pc);
+            #if defined(assemblerlist)
+            if (arglist == argval) superprint(arg, 0, pserial);
+            pln(pserial);
+            #endif
+          }
+          pc = pc + 2;
+          cdr(pcpair) = number(pc);
+          arglist = cdr(arglist);
+        }
+      } else if (integerp(argval)) {
+        if (pass == 2) {
+          putcode(argval, origin, pc);
+          #if defined(assemblerlist)
+          superprint(arg, 0, pserial); pln(pserial);
+          #endif
+        }
+        pc = pc + 2;
+        cdr(pcpair) = number(pc);
+      } else error(DEFCODE, PSTR("illegal entry"), arg);
+    }
+    entries = cdr(entries);
+  }
+  // Round up to multiple of 4 to give code size
+  if (pc%4 != 0) pc = pc + 4 - pc%4;
+  return pc;
+}
+
 // Special forms
 
 object *sp_quote (object *args, object *env) {
@@ -2059,6 +2152,107 @@ object *sp_withclient (object *args, object *env) {
   client.stop();
   return result;
 }
+
+// Assembler
+
+object *sp_defcode (object *args, object *env) {
+  setflag(NOESC);
+  checkargs(DEFCODE, args);
+  object *var = first(args);
+  object *params = second(args);
+  if (!symbolp(var)) error(DEFCODE, PSTR("not a symbol"), var);
+
+  // Make parameters into synonyms for registers a0, a1, etc
+  int regn = 0;
+  while (params != NULL) {
+    if (regn > 3) error(DEFCODE, PSTR("more than 4 parameters"), var);
+    object *regpair = cons(car(params), bsymbol((builtin_t)((toradix40('a')*40+toradix40('0')+regn)*2560000))); // Symbol for a0 etc
+    push(regpair,env);
+    regn++;
+    params = cdr(params);
+  }
+  
+  // Make *pc* a local variable
+  object *pcpair = cons(bsymbol(PSTAR), number(0));
+  push(pcpair,env);
+  args = cdr(args);
+  
+  // Make labels into local variables
+  object *entries = cdr(args);
+  while (entries != NULL) {
+    object *arg = first(entries);
+    if (symbolp(arg)) {
+      object *pair = cons(arg,number(0));
+      push(pair,env);
+    }
+    entries = cdr(entries);
+  } 
+
+  // First pass
+  int origin = 0;
+  int codesize = assemble(1, origin, cdr(args), env, pcpair);
+
+  // See if it will fit
+  object *globals = GlobalEnv;
+  while (globals != NULL) {
+    object *pair = car(globals);
+    if (pair != NULL && car(pair) != var && consp(cdr(pair))) { // Exclude me if I already exist
+      object *codeid = second(pair);
+      if (codeid->type == CODE) {
+        codesize = codesize + endblock(codeid) - startblock(codeid);
+      }
+    }
+    globals = cdr(globals);
+  }
+  if (codesize > CODESIZE) error(DEFCODE, PSTR("not enough room for code"), var);
+  
+  // Compact the code block, removing gaps
+  origin = 0;
+  object *block;
+  int smallest;
+
+  do {
+    smallest = CODESIZE;
+    globals = GlobalEnv;
+    while (globals != NULL) {
+      object *pair = car(globals);
+      if (pair != NULL && car(pair) != var && consp(cdr(pair))) { // Exclude me if I already exist
+        object *codeid = second(pair);
+        if (codeid->type == CODE) {
+          if (startblock(codeid) < smallest && startblock(codeid) >= origin) {
+            smallest = startblock(codeid);
+            block = codeid;
+          }        
+        }
+      }
+      globals = cdr(globals);
+    }
+
+    // Compact fragmentation if necessary
+    if (smallest == origin) origin = endblock(block); // No gap
+    else if (smallest < CODESIZE) { // Slide block down
+      int target = origin;
+      for (int i=startblock(block); i<endblock(block); i++) {
+        MyCode[target] = MyCode[i];
+        target++;
+      }
+      block->integer = target<<16 | origin;
+      origin = target;
+    }
+    
+  } while (smallest < CODESIZE);
+
+  // Second pass - origin is first free location
+  codesize = assemble(2, origin, cdr(args), env, pcpair);
+
+  object *val = cons(codehead((origin+codesize)<<16 | origin), args);
+  object *pair = value(var->name, GlobalEnv);
+  if (pair != NULL) cdr(pair) = val;
+  else push(cons(var, val), GlobalEnv);
+  clrflag(NOESC);
+  return var;
+}
+
 
 // Tail-recursive forms
 
@@ -3545,6 +3739,8 @@ object *fn_pprintall (object *args, object *env) {
     pln(pfun);
     if (consp(val) && symbolp(car(val)) && builtin(car(val)->name) == LAMBDA) {
       superprint(cons(bsymbol(DEFUN), cons(var, cdr(val))), 0, pfun);
+    } else if (consp(val) && car(val)->type == CODE) {
+      superprint(cons(bsymbol(DEFCODE), cons(var, cdr(val))), 0, pfun);
     } else {
       superprint(cons(bsymbol(DEFVAR), cons(var, cons(quote(val), NULL))), 0, pfun);
     }
@@ -3989,7 +4185,7 @@ const char string35[] PROGMEM = "with-spi";
 const char string36[] PROGMEM = "with-sd-card";
 const char string37[] PROGMEM = "with-gfx";
 const char string38[] PROGMEM = "with-client";
-const char string39[] PROGMEM = "";
+const char string39[] PROGMEM = "defcode";
 const char string40[] PROGMEM = "progn";
 const char string41[] PROGMEM = "if";
 const char string42[] PROGMEM = "cond";
@@ -4228,7 +4424,7 @@ const tbl_entry_t lookup_table[] PROGMEM = {
   { string36, sp_withsdcard, 0x2F },
   { string37, sp_withgfx, 0x1F },
   { string38, sp_withclient, 0x12 },
-  { string39, NULL, 0x00 },
+  { string39, sp_defcode, 0x0F },
   { string40, tf_progn, 0x0F },
   { string41, tf_if, 0x23 },
   { string42, tf_cond, 0x0F },
@@ -4461,11 +4657,16 @@ void testescape () {
 
 // Main evaluator
 
+char end[0];
+
 object *eval (object *form, object *env) {
+  register int *sp asm ("sp");
   int TC=0;
   EVAL:
   yield(); // Needed on ESP8266 to avoid Soft WDT Reset
   // Enough space?
+  // Serial.println((uintptr_t)sp - (uintptr_t)end);
+  if ((uintptr_t)sp - (uintptr_t)end < STACKDIFF) error2(NIL, PSTR("Stack overflow"));
   if (Freespace <= WORKSPACESIZE>>4) gc(form, env);
   // Escape
   if (tstflag(ESCAPE)) { clrflag(ESCAPE); error2(NIL, PSTR("escape!"));}
@@ -4484,6 +4685,10 @@ object *eval (object *form, object *env) {
     else if (builtinp(name)) return form;
     error(NIL, PSTR("undefined"), form);
   }
+
+  #if defined(CODESIZE)
+  if (form->type == CODE) error2(NIL, PSTR("can't evaluate CODE header"));
+  #endif
 
   // It's a list
   object *function = car(form);
@@ -4602,6 +4807,15 @@ object *eval (object *form, object *env) {
       goto EVAL;
     }
 
+    if (car(function)->type == CODE) {
+      int n = listlength(DEFCODE, second(function));
+      if (nargs<n) errorsym2(fname->name, toofewargs);
+      if (nargs>n) errorsym2(fname->name, toomanyargs);
+      uint32_t entry = startblock(car(function));
+      pop(GCStack);
+      return call(entry, n, args, env);
+    }
+
   }
   error(NIL, PSTR("illegal function"), fname); return nil;
 }
@@ -4716,6 +4930,16 @@ void pintbase (uint32_t i, uint8_t base, pfun_t pfun) {
   }
 }
 
+void printhex4 (int i, pfun_t pfun) {
+  int p = 0x1000;
+  for (int d=p; d>0; d=d/16) {
+    int j = i/d;
+    pfun((j<10) ? j+'0' : j + 'W'); 
+    i = i - j*d;
+  }
+  pfun(' ');
+}
+
 void pmantissa (float f, pfun_t pfun) {
   int sig = floor(log10(f));
   int mul = pow(10, 5 - sig);
@@ -4806,6 +5030,7 @@ void printobject (object *form, pfun_t pfun) {
   else if (characterp(form)) pcharacter(form->chars, pfun);
   else if (stringp(form)) printstring(form, pfun);
   else if (arrayp(form)) printarray(form, pfun);
+  else if (form->type == CODE) pfstring(PSTR("code"), pfun);
   else if (streamp(form)) pstream(form, pfun);
   else error2(NIL, PSTR("error in print"));
 }
@@ -4947,7 +5172,7 @@ int gserial () {
   unsigned long start = millis();
   while (!Serial.available()) {
     #if defined(ARDUINO_ESP32C3_DEV) 
-    yield(); //otherwise watchdog is complaining about 100% cpu usage by loopTask
+    vTaskDelay(30); //otherwise watchdog is complaining about 100% cpu usage by loopTask
     #endif
     if (millis() - start > 1000) clrflag(NOECHO);
   }
