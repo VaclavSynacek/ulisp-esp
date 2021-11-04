@@ -4947,7 +4947,7 @@ int gserial () {
   unsigned long start = millis();
   while (!Serial.available()) {
     #if defined(ARDUINO_ESP32C3_DEV) 
-    vTaskDelay(10); //otherwise watchdog is complaining about 100% cpu usage by loopTask
+    yield(); //otherwise watchdog is complaining about 100% cpu usage by loopTask
     #endif
     if (millis() - start > 1000) clrflag(NOECHO);
   }
